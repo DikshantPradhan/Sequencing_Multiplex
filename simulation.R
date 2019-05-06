@@ -1,15 +1,13 @@
 # simulate reads
 #!/usr/bin/Rscript
 
-args <- commandArgs(trailingOnly = TRUE)
-
-n_args <- length(args)
-
-read_len <- args[1]
-n_reads <- args[2]
-files <- args[3:n_args]
-
-
+# args <- commandArgs(trailingOnly = TRUE)
+# 
+# n_args <- length(args)
+# 
+# read_len <- args[1]
+# n_reads <- args[2]
+# files <- args[3:n_args]
 
 library(seqinr)
 library(ShortRead)
@@ -80,6 +78,7 @@ draw_genome_reads <- function(genome, mean_read_length = 1500, num_reads = 10^6)
   
   for (i in 1:num_reads){
     og_read <- sample_read(genome, read_len = read_length_samples[i])
+    # print(grepl(og_read, genome, fixed = TRUE))
     read <- read_error(og_read, ins_prob = 0, sub_prob = 0, del_prob = 0)
     q <- paste(rep('Z', nchar(read)), collapse = '')
     # if (!identical(og_read, read)){
@@ -87,7 +86,7 @@ draw_genome_reads <- function(genome, mean_read_length = 1500, num_reads = 10^6)
     #   print(paste(og_read, read))
     # }
     
-    reads[i] <- read
+    reads[i] <- og_read
     q_scores[i] <- q
   }
   
@@ -102,21 +101,49 @@ sample_contigs_from_genome <- function(genome, mean_contig_length  = 100000, num
 
 fasta_to_string <- function(file){
   genome <- read.fasta(file)
-  characters <- genome[[1]]
-  # characters <- c()
-  # for(i in 1:length(genome)){
-  #   characters <- c(characters, genome[[1]])
-  # }
+  # characters <- genome[[1]]
+  characters <- c()
+  for(i in 1:length(genome)){
+    characters <- c(characters, genome[[i]])
+  }
   return(paste(characters, collapse = ''))
 }
 
-multiplex_genomes <- function(files, mean_read_length = 1500, num_reads = 10^6, matching_file = 'file_matching.csv'){
+fastq_to_string <- function(file){
+  genome <- readFastq(file)@sread
+  # characters <- genome[[1]]
+  characters <- c()
+  for(i in 1:length(genome)){
+    read <- toString(genome[[i]])
+    characters <- c(characters, read)
+  }
+  return(paste(characters, collapse = ''))
+}
+
+write_fastq <- function(reads, qualitySet, output_file = 'output.fastq', name = 'na'){
+  if (length(reads) != length(qualitySet)){return()}
+  for (i in 1:length(reads)){
+    read <- toupper(reads[i])
+    # print(read)
+    quality <- qualitySet[i]
+    name_line <- paste('@', name, sep = '')
+    # quality_line <- paste(rep(quality_char, read_len), sep = '')
+    
+    write(x = name_line, file = output_file, append = TRUE)
+    write(x = read, file = output_file, append = TRUE)
+    write(x = '+', file = output_file, append = TRUE)
+    write(x = quality, file = output_file, append = TRUE)
+  }
+}
+
+multiplex_genomes <- function(files, mean_read_length = 2500, num_reads = 10^6, matching_file = 'file_matching.csv'){
   
   mixed_reads <- c()
   mixed_qscores <- c()
   
   for (file in files){
     genome <- fasta_to_string(file)
+    write.fasta(genome, file.out = paste('source_', file, sep = ''), names = 'NA')
     # contig <- substr(genome, 1, 100000) #sample_contigs_from_genome(genome = genome, genome_name = file)
     # write.fasta(contig, file.out = paste('sample_contig_', file, collapse = ''), names = 'NA')
     sample_reads <- draw_genome_reads(genome, mean_read_length = mean_read_length, num_reads = num_reads)
@@ -124,7 +151,7 @@ multiplex_genomes <- function(files, mean_read_length = 1500, num_reads = 10^6, 
     mixed_qscores <- c(mixed_qscores, sample_reads$q_scores)
     file_name <- paste('sampled', file, sep = '_')
     fastq_file <- strsplit(file, split = 'fasta')[[1]][1]
-    fastq_file <- paste(fastq_file, 'fastq', sep = '')
+    fastq_file <- paste('source_', fastq_file, 'fastq', sep = '')
     line <- paste(file_name, fastq_file, sep = ', ')
     write(x = line, file = matching_file, append = TRUE)
     file_matching <- c(matching_file, list(file_name, fastq_file))
@@ -143,18 +170,21 @@ multiplex_genomes <- function(files, mean_read_length = 1500, num_reads = 10^6, 
   mixed_qscores <- mixed_qscores[shuffle_reads]
   ids <- rep('name', length(mixed_reads))
   
-  dna <- DNAStringSet(mixed_reads)
-  qual <- BStringSet(mixed_qscores)
-  ids <- BStringSet(ids)
+  write_fastq(reads = mixed_reads, qualitySet = mixed_qscores)
   
-  reads <- ShortReadQ(sread = dna, quality = qual, id = ids)
+  # 
+  # dna <- DNAStringSet(mixed_reads)
+  # qual <- BStringSet(mixed_qscores)
+  # ids <- BStringSet(ids)
+  # 
+  # reads <- ShortReadQ(sread = dna, quality = qual, id = ids)
   # writeFastq(reads, file = 'multiplexed_reads.fastq')
   # write.fasta(as.list(mixed_reads), file.out = 'multiplexed_reads.fasta', names = 'NA')
 }
 
 # genome <- fasta_to_string('sobrinus_NCTC10921.fasta')
 # files <- c('pneumoniae_R6.fasta', 'pyogenes_M1_GAS.fasta', 'sobrinus_NCTC10921.fasta')
-# files <- c('10919contigs.fasta')#, '6715_15contigs.fasta', 'SL1contigs.fasta')
+files <- c('10919contigs.fasta', '6715_15contigs.fasta', 'SL1contigs.fasta')
 # genome <- fasta_to_string(files[1])
 # sample_reads <- draw_genome_reads(genome, mean_read_length = 10, num_reads = 100)
-multiplex_genomes(files, mean_read_length = read_len, num_reads = n_reads)
+multiplex_genomes(files, mean_read_length = 6000, num_reads = 10)

@@ -1,14 +1,13 @@
 # analyze demux
 #!/usr/bin/Rscript
 
-args <- commandArgs(trailingOnly = TRUE)
-
-n_args <- length(args)
-
-read_len <- args[1]
-n_reads <- args[2]
-files <- args[3:n_args]
-
+# args <- commandArgs(trailingOnly = TRUE)
+# 
+# n_args <- length(args)
+# 
+# read_len <- args[1]
+# n_reads <- args[2]
+# files <- args[3:n_args]
 
 library(seqinr)
 library(ShortRead)
@@ -45,16 +44,16 @@ calculate_confusion_matrix <- function(files){
   colnames(mtx) <- files[,2]
   
   for (i in 1:n){
-    actual <- files[i,1]
-    predicted <- files[i,2]
+    actual <- as.character(files[i,1])
+    predicted <- as.character(files[i,2])
     
     scores <- process_read_files(actual_read_file = actual, predicted_read_file = predicted)
     
     mtx[i,i] <- scores$match
     
-    other <- which(files[,2] != predicted)
+    others <- which(files[,2] != predicted)
     for (j in others){
-      scores <- process_read_files(actual_read_file = actual, predicted_read_file = files[j,2])
+      scores <- process_read_files(actual_read_file = actual, predicted_read_file = as.character(files[j,2]))
       mtx[i,j] <- scores$match
     }
   }
@@ -65,3 +64,6 @@ calculate_confusion_matrix <- function(files){
 matching_file <- 'file_matching.csv'
 files <- read.csv(matching_file, header = FALSE)
 colnames(files) <- c('actual read file', 'predicted read file')
+mtx <- calculate_confusion_matrix(files)
+# files <- as.character(files)
+
