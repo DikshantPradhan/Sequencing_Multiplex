@@ -9,6 +9,7 @@
 # n_reads <- args[2]
 # files <- args[3:n_args]
 
+library(magrittr)
 library(seqinr)
 library(ShortRead)
 library(Biostrings)
@@ -42,7 +43,7 @@ sample_read <- function(genome, read_len){
   return(read)
 }
 
-read_error <- function(read, ins_prob = 0.0002, sub_prob = 0.0002, del_prob = 0.001, prob_sample_size = 10^6){
+read_error <- function(read, ins_prob = 0.1, sub_prob = 0.1, del_prob = 0.1, prob_sample_size = 10^6){
   nucleotides <- c('a', 't', 'c', 'g')
   
   read_len <- nchar(read)
@@ -120,13 +121,16 @@ fastq_to_string <- function(file){
   return(paste(characters, collapse = ''))
 }
 
-write_fastq <- function(reads, qualitySet, output_file = 'output.fastq', name = 'na'){
+write_fastq <- function(reads, qualitySet, output_file = 'output.fastq', names = c()){
+  if (length(names) < length(reads)){
+    names <- seq(from = 1, to = length(reads))
+  }
   if (length(reads) != length(qualitySet)){return()}
   for (i in 1:length(reads)){
     read <- toupper(reads[i])
     # print(read)
     quality <- qualitySet[i]
-    name_line <- paste('@', name, sep = '')
+    name_line <- paste('@', names[i], sep = '')
     # quality_line <- paste(rep(quality_char, read_len), sep = '')
     
     write(x = name_line, file = output_file, append = TRUE)
@@ -140,6 +144,8 @@ multiplex_genomes <- function(files, mean_read_length = 2500, num_reads = 10^6, 
   
   mixed_reads <- c()
   mixed_qscores <- c()
+  sources <- c()
+  read_names <- c()
   
   for (file in files){
     genome <- fasta_to_string(file)
@@ -147,6 +153,16 @@ multiplex_genomes <- function(files, mean_read_length = 2500, num_reads = 10^6, 
     # contig <- substr(genome, 1, 100000) #sample_contigs_from_genome(genome = genome, genome_name = file)
     # write.fasta(contig, file.out = paste('sample_contig_', file, collapse = ''), names = 'NA')
     sample_reads <- draw_genome_reads(genome, mean_read_length = mean_read_length, num_reads = num_reads)
+    
+    # source
+    source_file <- paste('source_', file, sep = '')
+    sources <- c(sources, rep(source_file, num_reads))
+    
+    # add read names
+    len_names <- length(read_names)
+    new_names <- seq(from = 1, to = num_reads) + len_names
+    read_names <- c(read_names, new_names)
+    
     mixed_reads <- c(mixed_reads, sample_reads$reads)
     mixed_qscores <- c(mixed_qscores, sample_reads$q_scores)
     file_name <- paste('sampled', file, sep = '_')
@@ -168,10 +184,14 @@ multiplex_genomes <- function(files, mean_read_length = 2500, num_reads = 10^6, 
   
   mixed_reads <- mixed_reads[shuffle_reads] #sample(mixed_reads, size = length(mixed_reads))
   mixed_qscores <- mixed_qscores[shuffle_reads]
-  ids <- rep('name', length(mixed_reads))
+  sources <- sources[shuffle_reads]
+  read_names <- read_names[shuffle_reads]
   
-  write_fastq(reads = mixed_reads, qualitySet = mixed_qscores)
+  # ids <- rep('name', length(mixed_reads))
   
+  write_fastq(reads = mixed_reads, qualitySet = mixed_qscores, names = read_names)
+  df <- data.frame(names = read_names, sources = sources)
+  return(df)
   # 
   # dna <- DNAStringSet(mixed_reads)
   # qual <- BStringSet(mixed_qscores)
@@ -182,9 +202,158 @@ multiplex_genomes <- function(files, mean_read_length = 2500, num_reads = 10^6, 
   # write.fasta(as.list(mixed_reads), file.out = 'multiplexed_reads.fasta', names = 'NA')
 }
 
+minimap2 <- function(contigs, reads) {
+  outfile <- tempfile(contigs, tmpdir=".")
+  # outfile <- paste(contigs, '_temp', sep = '')
+  cmd <- sprintf("~/GitHub/nomux/minimap2-2.17_x64-linux/minimap2 -x map-ont -o %s %s %s", outfile, contigs, reads)
+  system(cmd)
+  return(outfile)
+}
+
+PAF_cols <- dplyr::frame_data(
+  ~type, ~name,
+  "c", "qname",
+  "i", "qlen",
+  "i", "qstart",
+  "i", "qend",
+  "c", "strand",
+  "c", "tname",
+  "i", "tlen",
+  "i", "tstart",
+  "i", "tend",
+  "i", "nmatch",
+  "i", "len",
+  "i", "mapq"
+)
+
+load_paf <- function(alignments, remove_file=TRUE) {
+  aligns <- readr::read_tsv(alignments, col_names=PAF_cols$name, col_types=do.call(readr::cols_only, as.list(PAF_cols$type)))
+  if (remove_file) {
+    file.remove(alignments)
+  }
+  return(aligns)
+}
+
+split_fastx_by_name <- function(readnames, readsfile, unmatched=NULL) {
+  # Splits a FAST{A/Q} file `readsfile` into k partitions.
+  # `readnames` is a list of length k. Each entry is a vector of read names.
+  # names(readnames) are the filenames to use. If NULL, appends _i to `readsfile`.
+  # `unmatched` is a filename for any reads not matching the names in readnames.
+  # Assumes that each read name appears in only one set of readnames. If a read
+  # name appears multiple times, it will be placed in the last file.
+  
+  k = length(readnames)
+  if (is.null(names(readnames))) {
+    outfiles <- paste(reads, 1:k, sep="_")
+  } else {
+    outfiles <- names(readnames)
+  }
+  hash <- c()
+  for (i in 1:k) {
+    hash[readnames[[i]]] <- i
+  }
+  
+  stream <- open(ShortRead::FastqStreamer(readsfile))
+  on.exit(close(stream))
+  repeat {
+    fq <- ShortRead::yield(stream)
+    if (length(fq) == 0) {
+      break
+    }
+    
+    for (i in 1:length(fq)) {
+      id <- as.character(fq[i]@id)
+      only_id <- stringr::str_extract(id, "^\\S+")
+      # print(only_id)
+      loc <- hash[only_id]
+      if (!is.na(loc)) {
+        ShortRead::writeFastq(fq[i], outfiles[loc], mode="a", compress=FALSE)
+      } else if (!is.null(unmatched)) {
+        ShortRead::writeFastq(fq[i], unmatched, mode="a", compress=FALSE)
+      }
+    }
+  }
+  
+  # return counts?
+}
+
+score_alignments <- function(alignments) {
+  alignments %>%
+    dplyr::mutate(score = nmatch)
+}
+
+nomux <- function(contigs, reads, split_reads=TRUE) {
+  aligns <- purrr::map_dfr(contigs, ~ dplyr::mutate(load_paf(minimap2(.x, reads)), contig=.x))
+  mappings <- aligns %>% 
+    score_alignments() %>%
+    dplyr::group_by(qname) %>%
+    dplyr::top_n(1, score)
+  
+  readnames <- mappings %>%
+    dplyr::select(qname, contig) %>%
+    dplyr::group_by(contig) %>%
+    tidyr::nest()
+  
+  if (split_reads) {
+    lists <- purrr::map(readnames$data, "qname")
+    # print(lists)
+    # names(lists) <- modifile::concat_filenames(reads, contigs)
+    # names(lists) <- paste(reads, contigs)
+    split_fastx_by_name(lists, reads)
+  }
+  
+  #mappings %>%
+  #  dplyr::group_by(contig) %>% 
+  #  dplyr::count(contig)
+  mappings
+}
+
+demux_scoring <- function(actual, predicted, actual_source, predicted_source){
+  actual_reads <- actual$names[which(actual$sources == actual_source)]
+  actual_reads <- as.character(actual_reads)
+  predicted_reads <- predicted$qname[which(predicted$contig == predicted_source)]
+  
+  return(length(intersect(actual_reads, predicted_reads)))
+}
+
+calculate_confusion_matrix <- function(actual, predicted){
+  actual_sources <- unique(actual$sources)
+  predicted_sources <- unique(predicted$contig)
+  actual_n <- length(actual_sources)
+  predicted_n <- length(predicted_sources)
+  
+  mtx <- matrix(data = 0, nrow = actual_n, ncol = predicted_n)
+  rownames(mtx) <- actual_sources
+  colnames(mtx) <- predicted_sources
+  
+  for (i in actual_sources){
+    for (j in predicted_sources){
+      mtx[i,j] <- demux_scoring(actual, predicted, i, j)
+    }
+  }
+  
+  return(mtx)
+}
+
+
+#align10919 <- minimap2("testdata/SSO_10919contigs.fasta", "testdata/reads_10919_sample100.fastq") %>% load_alignment()
+#alignSL1 <- minimap2("testdata/SSO_SL1contigs.fasta", "testdata/reads_10919_sample100.fastq") %>% load_alignment()
+
+# contigs <- c("testdata/SSO_10919contigs.fasta", 
+#              "testdata/SSO_6715-15contigs.fasta",
+#              "testdata/SSO_SL1contigs.fasta")
+
+
 # genome <- fasta_to_string('sobrinus_NCTC10921.fasta')
 # files <- c('pneumoniae_R6.fasta', 'pyogenes_M1_GAS.fasta', 'sobrinus_NCTC10921.fasta')
 files <- c('10919contigs.fasta', '6715_15contigs.fasta', 'SL1contigs.fasta')
 # genome <- fasta_to_string(files[1])
 # sample_reads <- draw_genome_reads(genome, mean_read_length = 10, num_reads = 100)
-multiplex_genomes(files, mean_read_length = 6000, num_reads = 10)
+actual <- multiplex_genomes(files, mean_read_length = 6000, num_reads = 10)
+
+contigs <- paste('source', files, sep = '_') #c('source_10919contigs.fastq', 'source_6715_15contigs.fastq', 'source_SL1contigs.fastq')
+# reads <- "testdata/reads_10919_sample100.fastq"
+reads <- 'output.fastq'
+predicted <- nomux(contigs, reads)
+
+confusion_mtx <- calculate_confusion_matrix(actual, predicted)
