@@ -80,8 +80,11 @@ draw_genome_reads <- function(genome, mean_read_length = 1500, num_reads = 10^6)
   for (i in 1:num_reads){
     og_read <- sample_read(genome, read_len = read_length_samples[i])
     # print(grepl(og_read, genome, fixed = TRUE))
-    read <- read_error(og_read, ins_prob = 0, sub_prob = 0, del_prob = 0)
+    read <- read_error(og_read, ins_prob = 0.1, sub_prob = 0.1, del_prob = 0.1)
     q <- paste(rep('Z', nchar(read)), collapse = '')
+    
+    # print(paste(nchar(read), nchar(q)))
+    # print(paste(og_read, read))
     # if (!identical(og_read, read)){
     #   print('error')
     #   print(paste(og_read, read))
@@ -129,7 +132,8 @@ write_fastq <- function(reads, qualitySet, output_file = 'output.fastq', names =
   for (i in 1:length(reads)){
     read <- toupper(reads[i])
     # print(read)
-    quality <- qualitySet[i]
+    q <- paste(rep('Z', nchar(read)), collapse = '')
+    quality <- q #qualitySet[i]
     name_line <- paste('@', names[i], sep = '')
     # quality_line <- paste(rep(quality_char, read_len), sep = '')
     
@@ -228,9 +232,9 @@ PAF_cols <- dplyr::frame_data(
 
 load_paf <- function(alignments, remove_file=TRUE) {
   aligns <- readr::read_tsv(alignments, col_names=PAF_cols$name, col_types=do.call(readr::cols_only, as.list(PAF_cols$type)))
-  if (remove_file) {
-    file.remove(alignments)
-  }
+  # if (remove_file) {
+  #   file.remove(alignments)
+  # }
   return(aligns)
 }
 
@@ -317,8 +321,8 @@ demux_scoring <- function(actual, predicted, actual_source, predicted_source){
 }
 
 calculate_confusion_matrix <- function(actual, predicted){
-  actual_sources <- unique(actual$sources)
-  predicted_sources <- unique(predicted$contig)
+  actual_sources <- sort(unique(actual$sources))
+  predicted_sources <- sort(unique(predicted$contig))
   actual_n <- length(actual_sources)
   predicted_n <- length(predicted_sources)
   
@@ -349,11 +353,14 @@ calculate_confusion_matrix <- function(actual, predicted){
 files <- c('10919contigs.fasta', '6715_15contigs.fasta', 'SL1contigs.fasta')
 # genome <- fasta_to_string(files[1])
 # sample_reads <- draw_genome_reads(genome, mean_read_length = 10, num_reads = 100)
-actual <- multiplex_genomes(files, mean_read_length = 6000, num_reads = 10)
+reads <- 'output.fastq'
+file.remove(reads)
+
+actual <- multiplex_genomes(files, mean_read_length = 5000, num_reads = 100)
 
 contigs <- paste('source', files, sep = '_') #c('source_10919contigs.fastq', 'source_6715_15contigs.fastq', 'source_SL1contigs.fastq')
 # reads <- "testdata/reads_10919_sample100.fastq"
-reads <- 'output.fastq'
 predicted <- nomux(contigs, reads)
 
 confusion_mtx <- calculate_confusion_matrix(actual, predicted)
+print(confusion_mtx)
